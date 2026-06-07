@@ -2,6 +2,7 @@ import type { AppConfig, GitHubIssue, MatchedIssue, RankedIssue } from '../types
 import { logger } from '../infra/index.js';
 import { githubService } from './github.js';
 import { llmService } from './llm.js';
+import { memoryService } from './memory.js';
 import { opportunityService } from './opportunity.js';
 import { proofOfWorkService } from './proof-of-work.js';
 
@@ -133,10 +134,47 @@ export class IssueRankingService {
       .map((entry) => entry.issue);
   }
 
-  selectIssueForAutomation(issues: RankedIssue[], minOverallScore: number): RankedIssue | undefined {
-    const contributedIds = new Set(
+  /**
+   * Collect already-attempted issue ids from proof-of-work records AND
+   * per-repo memory so that interactive and headless selection both skip
+   * issues that were already drafted (including zero-change runs).
+   */
+  private _alreadyAttemptedIds(): Set<string> {
+    const ids = new Set(
       proofOfWorkService.load().records.map((r) => `${r.repoFullName}#${r.issueNumber}`),
     );
+
+    // Walk every repo-memory file to catch draft_only / skipped entries
+    // that a previous interactive run recorded but never published.
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const stateDir = path.join(
+        process.env.OPENMETA_STATE_DIR ?? path.join(require('os').homedir(), '.config', 'openmeta'),
+        'repo-memory',
+      );
+      if (fs.existsSync(stateDir)) {
+        for (const name of fs.readdirSync(stateDir)) {
+          if (!name.endsWith('.json')) continue;
+          try {
+            const raw = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf-8'));
+            for (const entry of raw.recentIssues ?? []) {
+              if (entry.reference) ids.add(entry.reference);
+            }
+          } catch {
+            // corrupt file — skip
+          }
+        }
+      }
+    } catch {
+      // state dir not accessible — degrade gracefully
+    }
+
+    return ids;
+  }
+
+  selectIssueForAutomation(issues: RankedIssue[], minOverallScore: number): RankedIssue | undefined {
+    const contributedIds = this._alreadyAttemptedIds();
 
     const fresh = issues.filter(
       (issue) =>
@@ -161,11 +199,20 @@ export class IssueRankingService {
       return issues.slice(0, Math.max(0, limit));
     }
 
+    const attemptedIds = this._alreadyAttemptedIds();
+    const unattempted = issues.filter(
+      (issue) => !attemptedIds.has(`${issue.repoFullName}#${issue.number}`),
+    );
+
+    // If filtering left too few, fall back to the original list so the UI
+    // still has something to show.
+    const pool = unattempted.length >= 2 ? unattempted : issues;
+
     const selected: RankedIssue[] = [];
     const selectedIds = new Set<string>();
     const seenRepos = new Set<string>();
 
-    for (const issue of issues) {
+    for (const issue of pool) {
       if (selected.length >= limit) {
         break;
       }
@@ -179,7 +226,7 @@ export class IssueRankingService {
       seenRepos.add(issue.repoFullName);
     }
 
-    for (const issue of issues) {
+    for (const issue of pool) {
       if (selected.length >= limit) {
         break;
       }
