@@ -666,6 +666,69 @@ export class WorkspaceService {
         return null;
     }
   }
+
+  /**
+   * Check whether the issue's described feature or change already exists in
+   * the repository.  Extracts likely method/class/function names from the
+   * issue title and body, then searches candidate file snippets for exact
+   * matches.  Returns a reason string when a match is found, null otherwise.
+   */
+  checkFeatureAlreadyExists(
+    issue: RankedIssue,
+    workspace: RepoWorkspaceContext,
+  ): string | null {
+    const identifiers = this._extractFeatureIdentifiers(issue);
+    if (identifiers.length === 0) return null;
+
+    const snippetText = workspace.snippets
+      .map((s) => s.content)
+      .join('\n');
+
+    const found: string[] = [];
+    for (const id of identifiers) {
+      if (snippetText.includes(id)) {
+        found.push(id);
+      }
+    }
+
+    if (found.length === 0) return null;
+    return `Feature appears to already exist — found in workspace: ${found.join(', ')}`;
+  }
+
+  /**
+   * Heuristic extraction of likely method/class/function names from issue text.
+   * Looks for CamelCase identifiers and `def`/`function`/`class` declarations
+   * mentioned in the issue title and body.
+   */
+  private _extractFeatureIdentifiers(issue: RankedIssue): string[] {
+    const text = `${issue.title}\n${issue.body}`;
+    const identifiers: string[] = [];
+
+    // Method/function names mentioned in backticks or as "add X" patterns
+    const backtickPattern = /`([A-Za-z_][A-Za-z0-9_.]*)`/g;
+    let match: RegExpExecArray | null;
+    while ((match = backtickPattern.exec(text)) !== null) {
+      const name = match[1].split('.').pop();
+      if (name && name.length > 2) identifiers.push(name);
+    }
+
+    // "add a to_json method" → to_json
+    const defPattern = /\b(add|implement|create|define)\s+(?:a\s+)?(?:new\s+)?[\w_-]+\s+(?:method|function|class|endpoint|route|endpoint)\s*(?:called|named|like)?\s*`?(\w+)`?/gi;
+    while ((match = defPattern.exec(text)) !== null) {
+      if (match[2] && match[2].length > 2) identifiers.push(match[2]);
+    }
+
+    // CamelCase class names: QualityReport, DataQualityReport
+    const classPattern = /\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/g;
+    while ((match = classPattern.exec(text)) !== null) {
+      // Only add if it looks like a class name (not a regular word)
+      if (match[1].length > 8 && /[A-Z].*[A-Z]/.test(match[1])) {
+        identifiers.push(match[1]);
+      }
+    }
+
+    return [...new Set(identifiers)];
+  }
 }
 
 export const workspaceService = new WorkspaceService();

@@ -236,6 +236,59 @@ export class AgentOrchestrator {
     completedStages.add('prepare');
     this.showWorkspaceSummary(workspace, memory);
 
+    // Guard: skip issues whose described features already exist in the repo.
+    const alreadyExists = workspaceService.checkFeatureAlreadyExists(selectedIssue, workspace);
+    if (alreadyExists) {
+      ui.callout({
+        label: 'OpenMeta Agent',
+        title: 'Feature already exists — skipping this issue',
+        subtitle: alreadyExists,
+        lines: [
+          `Issue: ${selectedIssue.repoFullName}#${selectedIssue.number}`,
+          'Saving a minimal artifact so the run stays traceable.',
+        ],
+        tone: 'info',
+      });
+      const artifacts = this.prepareLocalArtifactPaths(selectedIssue);
+      const skipNote = `# Skipped: Feature Already Exists\n\n${alreadyExists}\n\nIssue: ${selectedIssue.repoFullName}#${selectedIssue.number}\nTitle: ${selectedIssue.title}`;
+      writeFileSync(artifacts.dossierPath, skipNote, 'utf-8');
+      this.showResult({
+        issue: selectedIssue,
+        workspace,
+        memory,
+        patchDraft: { goal: 'Skipped — feature already exists', targetFiles: [], proposedChanges: [], risks: [] },
+        prDraft: { title: 'Skipped — feature already exists', summary: '', changes: [], validation: '', risks: '' },
+        dossier: skipNote,
+        artifacts,
+        inboxItem: {
+          id: `${selectedIssue.repoFullName}#${selectedIssue.number}`,
+          repoFullName: selectedIssue.repoFullName,
+          issueNumber: selectedIssue.number,
+          issueTitle: selectedIssue.title,
+          summary: alreadyExists,
+          overallScore: selectedIssue.opportunity.overallScore,
+          opportunityScore: selectedIssue.opportunity.score,
+          status: 'skipped' as const,
+          artifactDir: artifacts.artifactDir,
+          generatedAt: new Date().toISOString(),
+        },
+        proofRecord: {
+          id: `${selectedIssue.repoFullName}#${selectedIssue.number}@${Date.now()}`,
+          repoFullName: selectedIssue.repoFullName,
+          issueNumber: selectedIssue.number,
+          issueTitle: selectedIssue.title,
+          overallScore: selectedIssue.opportunity.overallScore,
+          opportunityScore: selectedIssue.opportunity.score,
+          branchName: workspace.branchName,
+          artifactDir: artifacts.artifactDir,
+          generatedAt: new Date().toISOString(),
+          published: false,
+        },
+        changedFiles: [],
+      });
+      return;
+    }
+
     this.renderAgentStage('draft', completedStages, 'Drafting patch strategy and turning it into concrete file changes.');
     const patchDraftResult = await ui.task({
       title: 'Generating patch strategy',
